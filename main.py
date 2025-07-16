@@ -1,10 +1,8 @@
-import logging import json import random import re from telegram import Update from telegram.ext import ( ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters )
-
-Token y grupo directamente incluidos
+import logging import os import json import random from collections import defaultdict, Counter from telegram import Update from telegram.ext import ( ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters )
 
 TOKEN = "8027791367:AAHOlycqUkBdVdM88dVBaIRr57piN3DRXR4" GROUP_ID = -1001169225264
 
-interactions_file = "interacciones.json"
+interactions_file = "interacciones.json" menciones_file = "menciones.json"
 
 Configurar logging
 
@@ -16,13 +14,17 @@ Funciones auxiliares
 
 ====================================
 
-def cargar_interacciones(): try: with open(interactions_file, "r", encoding="utf-8") as f: return json.load(f) except: return {}
+def cargar_json(filename): try: with open(filename, "r", encoding="utf-8") as f: return json.load(f) except: return {}
 
-def guardar_interacciones(data): with open(interactions_file, "w", encoding="utf-8") as f: json.dump(data, f, indent=2, ensure_ascii=False)
+def guardar_json(filename, data): with open(filename, "w", encoding="utf-8") as f: json.dump(data, f, indent=2, ensure_ascii=False)
 
-def registrar_interaccion(user_id, username): data = cargar_interacciones() data[str(user_id)] = username guardar_interacciones(data)
+def registrar_interaccion(user_id, username): data = cargar_json(interactions_file) data[str(user_id)] = username guardar_json(interactions_file, data)
 
-def obtener_pareja(): usuarios = list(cargar_interacciones().items()) if len(usuarios) < 2: return None return random.sample(usuarios, 2)
+def obtener_pareja(): usuarios = list(cargar_json(interactions_file).items()) if len(usuarios) < 2: return None return random.sample(usuarios, 2)
+
+def registrar_mencion(username): data = cargar_json(menciones_file) data[username] = data.get(username, 0) + 1 guardar_json(menciones_file, data)
+
+def obtener_top_menciones(): data = cargar_json(menciones_file) return sorted(data.items(), key=lambda x: x[1], reverse=True)
 
 ====================================
 
@@ -32,7 +34,7 @@ Comandos
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE): user = update.effective_user registrar_interaccion(user.id, user.username or user.first_name) await update.message.reply_text("👋 ¡Bienvenido al Radar Social!")
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE): await update.message.reply_text( "/start - Iniciar bot\n" "/pareja - Mostrar pareja del día\n" "/nominacion - Nominar a alguien (modo reality)\n" "/expulsion - Expulsar a alguien (modo reality)\n" "/compatibilidad - Ver compatibilidad\n" "/menciones_juan - Cuántas veces se menciona 'Juan'\n" "/ranking_menciones - Ranking de menciones\n" "/stats - Top usuarios activos\n" "/help - Ver comandos" )
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE): await update.message.reply_text( "/start - Iniciar bot\n" "/pareja - Mostrar pareja del día\n" "/nominacion @usuario - Nominar a alguien\n" "/expulsion @usuario - Expulsar nominado\n" "/compatibilidad @u1 @u2 - Ver compatibilidad\n" "/top - Ver ranking de menciones\n" "/help - Ver comandos" )
 
 💘 Pareja del día
 
@@ -52,29 +54,13 @@ async def expulsion(update: Update, context: ContextTypes.DEFAULT_TYPE): if not 
 
 async def compatibilidad(update: Update, context: ContextTypes.DEFAULT_TYPE): if len(context.args) < 2: await update.message.reply_text("💡 Uso: /compatibilidad @user1 @user2") return compat = random.randint(30, 100) await update.message.reply_text(f"🔗 Compatibilidad entre {context.args[0]} y {context.args[1]}: {compat}%")
 
-🧠 Stats y menciones
+🔝 Ranking menciones
 
-stats = {} menciones = {}
+async def top(update: Update, context: ContextTypes.DEFAULT_TYPE): top = obtener_top_menciones()[:5] if not top: await update.message.reply_text("📉 No hay menciones aún.") return mensaje = "🏆 Ranking de menciones:\n" + "\n".join([f"{i+1}. @{u} - {c}" for i, (u, c) in enumerate(top)]) await update.message.reply_text(mensaje)
 
-async def contar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE): user = update.effective_user username = user.username or user.first_name stats[username] = stats.get(username, 0) + 1 text = update.message.text.lower() if "juan" in text: menciones[username] = menciones.get(username, 0) + text.count("juan")
+📣 Contador de menciones
 
-# Respuestas automáticas
-if "franco" in text:
-    await update.message.reply_text("Arriba España 🤚")
-if "bro" in text:
-    frases_bro = ["Masivo bro", "Siempre ganando", "Hay niveles bro", "Fucking panzas"]
-    await update.message.reply_text(random.choice(frases_bro))
-if "moros" in text:
-    await update.message.reply_text("Moros no, España no es un zoo.")
-if "negros" in text:
-    await update.message.reply_text("No soy racista, soy ordenado. Dios creó continentes por algo.")
-if "charo" in text:
-    frases_charo = ["Sola y borracha quiero llegar a casa", "La culpa es del heteropatriarcado", "Pedro Sánchez es muy guapo"]
-    await update.message.reply_text(random.choice(frases_charo))
-
-async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE): ranking = sorted(stats.items(), key=lambda x: x[1], reverse=True) msg = "📊 Principales usuarios activos:\n" for user, count in ranking[:10]: msg += f"{user}: {count} mensajes\n" await update.message.reply_text(msg)
-
-async def menciones_juan(update: Update, context: ContextTypes.DEFAULT_TYPE): ranking = sorted(menciones.items(), key=lambda x: x[1], reverse=True) msg = "📈 Menciones a Juan por usuario:\n" for user, count in ranking: msg += f"{user}: {count}\n" await update.message.reply_text(msg)
+async def contar_menciones(update: Update, context: ContextTypes.DEFAULT_TYPE): if update.message and update.message.entities: for entity in update.message.entities: if entity.type == "mention": username = update.message.text[entity.offset+1: entity.offset + entity.length] registrar_mencion(username)
 
 🔁 Pareja automática cada hora
 
@@ -88,18 +74,15 @@ Main
 
 async def main(): app = ApplicationBuilder().token(TOKEN).build()
 
-# Comandos
+# Handlers
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CommandHandler("help", help_command))
 app.add_handler(CommandHandler("pareja", pareja))
 app.add_handler(CommandHandler("nominacion", nominacion))
 app.add_handler(CommandHandler("expulsion", expulsion))
 app.add_handler(CommandHandler("compatibilidad", compatibilidad))
-app.add_handler(CommandHandler("stats", stats_command))
-app.add_handler(CommandHandler("menciones_juan", menciones_juan))
-
-# Mensajes
-app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, contar_mensaje))
+app.add_handler(CommandHandler("top", top))
+app.add_handler(MessageHandler(filters.TEXT & filters.Entity("mention"), contar_menciones))
 
 # JobQueue para pareja automática
 app.job_queue.run_repeating(enviar_pareja_automatica, interval=3600, first=10)
