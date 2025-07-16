@@ -1,169 +1,129 @@
-import json
-import logging
 import os
+import logging
 import random
-from collections import defaultdict, Counter
+import json
+from telegram import Update, ChatMember
+from telegram.ext import (
+    ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler,
+    filters, CallbackContext
+)
 from datetime import datetime, timedelta
+from collections import defaultdict
+import asyncio
 
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
-
-# Configuración básica
+# Claves directamente incluidas para asegurar funcionamiento
 TOKEN = "8027791367:AAHOlycqUkBdVdM88dVBaIRr57piN3DRXR4"
-GROUP_ID = -1001169225264
+GRUPO_ID = -1001169225264
 
-# Interacciones por usuario
+# Diccionarios en memoria para simplificar la demo
 interacciones = defaultdict(lambda: defaultdict(int))
-mensaje_count = 0
-ultimo_mensaje_id = None
-pareja_anterior = None
+nominaciones = defaultdict(list)
+respuestas_auto = {
+    "franco": "🇪🇸 ¡Arriba España!",
+    "pro": "🤖 ¿Eres pro algo? ¡Yo soy pro-código!"
+}
 
-# Nominaciones y votos para modo Reality
-nominaciones = defaultdict(set)
-votaciones = Counter()
+usuarios_cache = {}  # Para evitar recargar nombres siempre
 
-# Cargar interacciones anteriores
-try:
-    with open("interacciones.json", "r") as f:
-        interacciones.update(json.load(f))
-except FileNotFoundError:
-    pass
+# FUNCIONES
 
-# Guardar datos periódicamente
-def guardar_datos():
-    with open("interacciones.json", "w") as f:
-        json.dump(interacciones, f)
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("🇪🇸 Bienvenido al Radar Social Bot.")
 
-# Registro de mensajes
-async def registrar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global mensaje_count, ultimo_mensaje_id
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "📌 Comandos disponibles:\n"
+        "/pareja_dia\n/nominar @usuario\n/nominaciones\n/expulsar @usuario\n"
+        "/compatibilidad @usuario\n/stats\n/help"
+    )
 
-    if update.message and update.message.from_user:
-        usuario = update.message.from_user.first_name
-        mensaje_count += 1
+async def pareja_dia(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat = update.effective_chat
+    members = [u for u in usuarios_cache.values()]
+    if len(members) < 2:
+        await update.message.reply_text("❗ No hay suficientes usuarios registrados.")
+        return
+    pareja = random.sample(members, 2)
+    await update.message.reply_text(f"💘 Pareja del día: {pareja[0]} ❤️ {pareja[1]}")
 
-        if update.message.reply_to_message and update.message.reply_to_message.from_user:
-            receptor = update.message.reply_to_message.from_user.first_name
-            interacciones[usuario][receptor] += 1
+async def enviar_pareja_automatica(context: CallbackContext):
+    if len(usuarios_cache) >= 2:
+        pareja = random.sample(list(usuarios_cache.values()), 2)
+        msg = f"🎯 *Pareja del día automática*\n❤️ {pareja[0]} + {pareja[1]}"
+        await context.bot.send_message(chat_id=GRUPO_ID, text=msg, parse_mode="Markdown")
 
-        texto = update.message.text.lower()
+async def nominar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("Debes mencionar a alguien para nominar.")
+        return
+    nominado = context.args[0]
+    user = update.effective_user.username or update.effective_user.first_name
+    nominaciones[user].append(nominado)
+    await update.message.reply_text(f"{nominado} ha sido nominado por {user} 🗳️")
 
-        # Frases automáticas
-        respuestas = {
-            "franco": "Arriba España 🤚",
-            "bro": ["Masivo bro", "Siempre ganando", "Hay niveles bro", "Fucking panzas"],
-            "moros": "Moros no, España no es un zoo.",
-            "negros": "No soy racista, soy ordenado. Dios creó el mundo con continentes por algo.",
-            "charo": [
-                "Sola y borracha quiero llegar a casa",
-                "La culpa es del heteropatriarcado",
-                "Pedro Sánchez es muy guapo"
-            ]
-        }
+async def ver_nominaciones(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not nominaciones:
+        await update.message.reply_text("Aún no hay nominaciones.")
+        return
+    texto = "📋 *Nominaciones:*\n"
+    for nominador, lista in nominaciones.items():
+        texto += f"👤 {nominador} nominó a: {', '.join(lista)}\n"
+    await update.message.reply_text(texto, parse_mode="Markdown")
 
-        for palabra, respuesta in respuestas.items():
-            if palabra in texto:
-                await update.message.reply_text(random.choice(respuesta) if isinstance(respuesta, list) else respuesta)
-                break
+async def expulsar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("Menciona a alguien para expulsar.")
+        return
+    expulsado = context.args[0]
+    await update.message.reply_text(f"⛔ {expulsado} ha sido expulsado del Reality Show (ficticiamente).")
 
-        # Pareja del día automática
-        if mensaje_count % 100 == 0:
-            await pareja_del_dia(update, context)
+async def compatibilidad(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("Menciona a alguien para calcular compatibilidad.")
+        return
+    persona = context.args[0]
+    porcentaje = random.randint(20, 100)
+    await update.message.reply_text(f"💞 Tu compatibilidad con {persona} es del {porcentaje}%")
 
-        guardar_datos()
-
-# Comandos básicos
-async def top_interacciones(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = "🤝 Interacciones entre usuarios:\n"
-    ranking = []
-    for usuario, otros in interacciones.items():
-        for receptor, cantidad in otros.items():
-            ranking.append((cantidad, usuario, receptor))
-
-    ranking.sort(reverse=True)
-    for cantidad, usuario, receptor in ranking[:15]:
-        msg += f"{usuario} → {receptor}: {cantidad}\n"
-    await update.message.reply_text(msg)
-
-async def pareja_del_dia(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global pareja_anterior
-    top = []
-    for usuario, otros in interacciones.items():
-        for receptor, count in otros.items():
-            top.append((count, usuario, receptor))
-    top.sort(reverse=True)
-
-    if top:
-        count, u1, u2 = top[0]
-        if pareja_anterior != (u1, u2):
-            pareja_anterior = (u1, u2)
-            msg = f"💘 Pareja del día: {u1} & {u2} ({count} interacciones)"
-            await context.bot.send_message(chat_id=GROUP_ID, text=msg)
+async def manejar_mensajes(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    texto = update.message.text.lower()
+    for palabra, respuesta in respuestas_auto.items():
+        if palabra in texto:
+            await update.message.reply_text(respuesta)
+            break
+    user = update.effective_user
+    usuarios_cache[user.id] = user.full_name
 
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    contador = defaultdict(int)
-    for usuario, otros in interacciones.items():
-        total = sum(otros.values())
-        contador[usuario] += total
+    conteo = defaultdict(int)
+    for u in usuarios_cache.values():
+        conteo[u] += 1
+    ranking = sorted(conteo.items(), key=lambda x: x[1], reverse=True)
+    texto = "📊 Usuarios activos:\n"
+    for i, (usuario, total) in enumerate(ranking[:10], 1):
+        texto += f"{i}. {usuario}\n"
+    await update.message.reply_text(texto)
 
-    top = sorted(contador.items(), key=lambda x: x[1], reverse=True)
-    msg = "📊 Principales usuarios activos:\n"
-    for user, count in top[:10]:
-        msg += f"{user}: {count} mensajes\n"
-    await update.message.reply_text(msg)
+# MAIN
 
-async def menciones_juan(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    contador = defaultdict(int)
-    for usuario, otros in interacciones.items():
-        contador[usuario] += otros.get("Juan", 0)
-
-    top = sorted(contador.items(), key=lambda x: x[1], reverse=True)
-    msg = "👤 Menciones a Juan:\n"
-    for user, count in top:
-        msg += f"{user}: {count} veces\n"
-    await update.message.reply_text(msg)
-
-# Reality Show: nominaciones
-async def nominar(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    nominado = " ".join(context.args)
-    if not nominado:
-        await update.message.reply_text("❗ Debes escribir el nombre de a quién nominas.")
-        return
-
-    nominador = update.message.from_user.first_name
-    if nominado == nominador:
-        await update.message.reply_text("❌ No puedes nominarte a ti mismo.")
-        return
-
-    if nominado in nominaciones[nominador]:
-        await update.message.reply_text("⚠️ Ya has nominado a esa persona.")
-        return
-
-    nominaciones[nominador].add(nominado)
-    votaciones[nominado] += 1
-    await update.message.reply_text(f"✅ {nominador} ha nominado a {nominado}.")
-
-async def ranking_nominados(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = "📉 Ranking de nominaciones:\n"
-    for user, count in votaciones.most_common():
-        msg += f"{user}: {count} nominaciones\n"
-    await update.message.reply_text(msg)
-
-# Setup del bot
 def main():
+    logging.basicConfig(level=logging.INFO)
     app = ApplicationBuilder().token(TOKEN).build()
 
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, registrar_mensaje))
-    app.add_handler(CommandHandler("interacciones", top_interacciones))
-    app.add_handler(CommandHandler("pareja_dia", pareja_del_dia))
-    app.add_handler(CommandHandler("stats", stats))
-    app.add_handler(CommandHandler("menciones_juan", menciones_juan))
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CommandHandler("pareja_dia", pareja_dia))
     app.add_handler(CommandHandler("nominar", nominar))
-    app.add_handler(CommandHandler("nominaciones", ranking_nominados))
+    app.add_handler(CommandHandler("nominaciones", ver_nominaciones))
+    app.add_handler(CommandHandler("expulsar", expulsar))
+    app.add_handler(CommandHandler("compatibilidad", compatibilidad))
+    app.add_handler(CommandHandler("stats", stats))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, manejar_mensajes))
 
-    print("Bot corriendo...")
+    # Enviar pareja del día automáticamente cada hora
+    app.job_queue.run_repeating(enviar_pareja_automatica, interval=3600, first=10)
+
     app.run_polling()
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
     main()
