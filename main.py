@@ -1,129 +1,169 @@
-import os
-import logging
-import random
 import json
+import os
+import random
 from telegram import Update, ChatMember
 from telegram.ext import (
-    ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler,
-    filters, CallbackContext
+    ApplicationBuilder,
+    CommandHandler,
+    MessageHandler,
+    ContextTypes,
+    filters,
 )
-from datetime import datetime, timedelta
+from datetime import datetime
+import logging
 from collections import defaultdict
-import asyncio
 
-# Claves directamente incluidas para asegurar funcionamiento
-TOKEN = "8027791367:AAHOlycqUkBdVdM88dVBaIRr57piN3DRXR4"
+# Variables ya integradas directamente
+BOT_TOKEN = "8027791367:AAHOlycqUkBdVdM88dVBaIRr57piN3DRXR4"
 GRUPO_ID = -1001169225264
 
-# Diccionarios en memoria para simplificar la demo
-interacciones = defaultdict(lambda: defaultdict(int))
-nominaciones = defaultdict(list)
-respuestas_auto = {
-    "franco": "🇪🇸 ¡Arriba España!",
-    "pro": "🤖 ¿Eres pro algo? ¡Yo soy pro-código!"
-}
+# Inicializar registros de interacciones
+INTERACCIONES_FILE = "interacciones.json"
+if os.path.exists(INTERACCIONES_FILE):
+    with open(INTERACCIONES_FILE, "r", encoding="utf-8") as f:
+        interacciones = json.load(f)
+else:
+    interacciones = defaultdict(int)
 
-usuarios_cache = {}  # Para evitar recargar nombres siempre
+logging.basicConfig(level=logging.INFO)
 
-# FUNCIONES
+# Guardar interacciones
+def guardar_interacciones():
+    with open(INTERACCIONES_FILE, "w", encoding="utf-8") as f:
+        json.dump(interacciones, f, indent=2, ensure_ascii=False)
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🇪🇸 Bienvenido al Radar Social Bot.")
+# Pareja del día
+usuarios_cache = []
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "📌 Comandos disponibles:\n"
-        "/pareja_dia\n/nominar @usuario\n/nominaciones\n/expulsar @usuario\n"
-        "/compatibilidad @usuario\n/stats\n/help"
-    )
-
-async def pareja_dia(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def pareja(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
-    members = [u for u in usuarios_cache.values()]
-    if len(members) < 2:
-        await update.message.reply_text("❗ No hay suficientes usuarios registrados.")
+    members = await context.bot.get_chat_administrators(chat.id)
+    all_members = [admin.user for admin in members if not admin.user.is_bot]
+    if len(all_members) < 2:
+        await update.message.reply_text("No hay suficientes usuarios.")
         return
-    pareja = random.sample(members, 2)
-    await update.message.reply_text(f"💘 Pareja del día: {pareja[0]} ❤️ {pareja[1]}")
+    pareja = random.sample(all_members, 2)
+    texto = f"❤️ Hoy la pareja del día es: {pareja[0].mention_html()} y {pareja[1].mention_html()} ❤️"
+    await context.bot.send_message(chat.id, texto, parse_mode="HTML")
 
-async def enviar_pareja_automatica(context: CallbackContext):
-    if len(usuarios_cache) >= 2:
-        pareja = random.sample(list(usuarios_cache.values()), 2)
-        msg = f"🎯 *Pareja del día automática*\n❤️ {pareja[0]} + {pareja[1]}"
-        await context.bot.send_message(chat_id=GRUPO_ID, text=msg, parse_mode="Markdown")
+# Envío automático cada hora
+async def enviar_pareja_automatica(context: ContextTypes.DEFAULT_TYPE):
+    chat_id = GRUPO_ID
+    try:
+        members = await context.bot.get_chat_administrators(chat_id)
+        all_members = [admin.user for admin in members if not admin.user.is_bot]
+        if len(all_members) >= 2:
+            pareja = random.sample(all_members, 2)
+            texto = f"💘 Pareja automática: {pareja[0].mention_html()} + {pareja[1].mention_html()}"
+            await context.bot.send_message(chat_id, texto, parse_mode="HTML")
+    except Exception as e:
+        logging.error(f"Error al enviar pareja automática: {e}")
+
+# Compatibilidad
+async def compatibilidad(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if len(context.args) != 2:
+        await update.message.reply_text("Usa: /compatibilidad @usuario1 @usuario2")
+        return
+    u1, u2 = context.args
+    nivel = random.randint(0, 100)
+    texto = f"💞 Compatibilidad entre {u1} y {u2}: {nivel}%"
+    await update.message.reply_text(texto)
+
+# Nominados
+nominados = set()
 
 async def nominar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
-        await update.message.reply_text("Debes mencionar a alguien para nominar.")
+        await update.message.reply_text("Usa: /nominar @usuario")
         return
-    nominado = context.args[0]
-    user = update.effective_user.username or update.effective_user.first_name
-    nominaciones[user].append(nominado)
-    await update.message.reply_text(f"{nominado} ha sido nominado por {user} 🗳️")
+    usuario = context.args[0]
+    nominados.add(usuario)
+    await update.message.reply_text(f"{usuario} ha sido nominado 📛")
 
-async def ver_nominaciones(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not nominaciones:
-        await update.message.reply_text("Aún no hay nominaciones.")
-        return
-    texto = "📋 *Nominaciones:*\n"
-    for nominador, lista in nominaciones.items():
-        texto += f"👤 {nominador} nominó a: {', '.join(lista)}\n"
-    await update.message.reply_text(texto, parse_mode="Markdown")
+async def ver_nominados(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not nominados:
+        await update.message.reply_text("No hay nominados.")
+    else:
+        await update.message.reply_text("📢 Nominados:\n" + "\n".join(nominados))
 
 async def expulsar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
-        await update.message.reply_text("Menciona a alguien para expulsar.")
+        await update.message.reply_text("Usa: /expulsar @usuario")
         return
-    expulsado = context.args[0]
-    await update.message.reply_text(f"⛔ {expulsado} ha sido expulsado del Reality Show (ficticiamente).")
+    usuario = context.args[0]
+    if usuario in nominados:
+        nominados.remove(usuario)
+        await update.message.reply_text(f"{usuario} ha sido expulsado 🧹")
+    else:
+        await update.message.reply_text("Ese usuario no está nominado.")
 
-async def compatibilidad(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        await update.message.reply_text("Menciona a alguien para calcular compatibilidad.")
-        return
-    persona = context.args[0]
-    porcentaje = random.randint(20, 100)
-    await update.message.reply_text(f"💞 Tu compatibilidad con {persona} es del {porcentaje}%")
+# Interacción automática por palabras clave
+PALABRAS_CLAVE = {
+    "franco": "¡Arriba España 🇪🇸!",
+    "pro": "¡Tú sí que sabes!",
+    "viva": "¡Viva España!"
+}
 
-async def manejar_mensajes(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def detectar_mensajes(update: Update, context: ContextTypes.DEFAULT_TYPE):
     texto = update.message.text.lower()
-    for palabra, respuesta in respuestas_auto.items():
+    for palabra, respuesta in PALABRAS_CLAVE.items():
         if palabra in texto:
             await update.message.reply_text(respuesta)
             break
-    user = update.effective_user
-    usuarios_cache[user.id] = user.full_name
+    # Registrar interacción
+    usuario = update.effective_user.username or update.effective_user.first_name
+    interacciones[usuario] = interacciones.get(usuario, 0) + 1
+    guardar_interacciones()
 
-async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    conteo = defaultdict(int)
-    for u in usuarios_cache.values():
-        conteo[u] += 1
-    ranking = sorted(conteo.items(), key=lambda x: x[1], reverse=True)
-    texto = "📊 Usuarios activos:\n"
-    for i, (usuario, total) in enumerate(ranking[:10], 1):
-        texto += f"{i}. {usuario}\n"
+# Ranking
+async def ranking(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not interacciones:
+        await update.message.reply_text("Aún no hay interacciones registradas.")
+        return
+    ordenado = sorted(interacciones.items(), key=lambda x: x[1], reverse=True)
+    texto = "📊 Ranking de actividad:\n"
+    for i, (usuario, puntos) in enumerate(ordenado[:10], 1):
+        texto += f"{i}. {usuario}: {puntos} pts\n"
     await update.message.reply_text(texto)
 
-# MAIN
+# Start y help
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("¡Bienvenido al Radar Social Bot!")
 
-def main():
-    logging.basicConfig(level=logging.INFO)
-    app = ApplicationBuilder().token(TOKEN).build()
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("""
+Comandos disponibles:
+/start - Iniciar bot
+/help - Ayuda
+/ranking - Ver ranking de actividad
+/pareja - Mostrar pareja del día
+/compatibilidad @u1 @u2 - Ver compatibilidad
+/nominar @usuario - Nominar a alguien
+/nominados - Ver nominados
+/expulsar @usuario - Expulsar nominado
+""")
 
+# Main
+async def main():
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
+
+    # Handlers
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(CommandHandler("pareja_dia", pareja_dia))
-    app.add_handler(CommandHandler("nominar", nominar))
-    app.add_handler(CommandHandler("nominaciones", ver_nominaciones))
-    app.add_handler(CommandHandler("expulsar", expulsar))
+    app.add_handler(CommandHandler("ranking", ranking))
+    app.add_handler(CommandHandler("pareja", pareja))
     app.add_handler(CommandHandler("compatibilidad", compatibilidad))
-    app.add_handler(CommandHandler("stats", stats))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, manejar_mensajes))
+    app.add_handler(CommandHandler("nominar", nominar))
+    app.add_handler(CommandHandler("nominados", ver_nominados))
+    app.add_handler(CommandHandler("expulsar", expulsar))
+    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), detectar_mensajes))
 
-    # Enviar pareja del día automáticamente cada hora
+    # Pareja automática cada 1 hora
     app.job_queue.run_repeating(enviar_pareja_automatica, interval=3600, first=10)
 
-    app.run_polling()
+    print("Bot corriendo...")
+    await app.run_polling()
 
 if __name__ == "__main__":
-    main()
+    import asyncio
+    asyncio.run(main())
